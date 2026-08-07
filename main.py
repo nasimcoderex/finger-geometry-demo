@@ -94,6 +94,8 @@ def main():
                                                   measurement_frame_bgr=clean_frame_bgr)
                 if ring_status == "not_straight":
                     draw_banner(frame_bgr, "Straighten your ring finger to place the ring")
+                elif ring_status == "fingers_together":
+                    draw_banner(frame_bgr, "Spread your fingers apart to place the ring")
                 status_lines += [
                     f"hand: {detection['handedness']}",
                     f"finger_length (model):  {finger_length_mm:6.1f} mm",

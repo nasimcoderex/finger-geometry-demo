@@ -80,6 +80,16 @@ WIDTH_MIN_EDGE_STRENGTH = 8.0     # grayscale gradient magnitude (0-255 scale) t
 # perfectly straight finger and drops sharply with any real bend.
 RING_MIN_STRAIGHTNESS = 0.90
 
+# Same idea, different failure mode: when the ring finger is pressed against
+# its neighbors (fingers held together rather than spread), there's no
+# background between them for _measure_finger_halfwidth_px's edge scan to
+# find - it was landing on the adjacent finger instead, undersizing the ring
+# to a thin sliver (seen directly in a screenshot: palm-forward, fingers
+# together). Gate on separation from both neighbors at the PIP joints
+# (landmarks 10, 14, 18 - middle/ring/pinky PIP), normalized by the ring
+# finger's own MCP->TIP length so it works at any distance from the camera.
+RING_MIN_NEIGHBOR_GAP_FRAC = 0.18
+
 
 class _OneEuroFilter:
     """One scalar channel of a One Euro Filter. See module docstring for why
@@ -161,6 +171,22 @@ def _finger_straightness(pts_px):
         return 0.0
     chord = np.linalg.norm(pts_px[-1] - pts_px[0])
     return float(chord / path_len)
+
+
+def _fingers_spread_enough(landmarks_px, min_gap_frac=RING_MIN_NEIGHBOR_GAP_FRAC):
+    """True if the ring finger has real background gaps to both neighbors
+    at the PIP joints, normalized by the ring finger's own MCP->TIP length.
+    False when fingers are pressed together (no gap for the width-measurement
+    edge scan to find)."""
+    ring_mcp, ring_tip = landmarks_px[13], landmarks_px[16]
+    finger_len = np.linalg.norm(ring_tip - ring_mcp)
+    if finger_len < 1e-6:
+        return False
+
+    middle_pip, ring_pip, pinky_pip = landmarks_px[10], landmarks_px[14], landmarks_px[18]
+    gap_to_middle = np.linalg.norm(ring_pip - middle_pip) / finger_len
+    gap_to_pinky = np.linalg.norm(ring_pip - pinky_pip) / finger_len
+    return gap_to_middle >= min_gap_frac and gap_to_pinky >= min_gap_frac
 
 
 def _point_and_tangent_along_path(pts_px, frac):
@@ -296,7 +322,8 @@ def render_ring_overlay(frame_bgr, geometry, detection, ring_mesh,
                          temporal_filter=None, position_frac=RING_POSITION_FRAC,
                          gap_mm=RING_GAP_MM, size_scale=RING_SIZE_SCALE,
                          roll_deg=RING_ROLL_OFFSET_DEG, measurement_frame_bgr=None,
-                         min_straightness=RING_MIN_STRAIGHTNESS):
+                         min_straightness=RING_MIN_STRAIGHTNESS,
+                         min_neighbor_gap_frac=RING_MIN_NEIGHBOR_GAP_FRAC):
     """Composites the loaded GLB ring mesh onto frame_bgr in-place, wrapped
     around the finger at `position_frac`. ring_mesh: (vertices, faces,
     normals, colors) as returned by ring_model.ensure_ring_glb() - vertices
@@ -308,10 +335,14 @@ def render_ring_overlay(frame_bgr, geometry, detection, ring_mesh,
     contaminate the gradient scan. Defaults to frame_bgr if not given.
 
     Returns a status string: "placed" if the ring was drawn, "not_straight"
-    if skipped because the ring finger is bent/curled, "unavailable" for any
-    other reason the pose couldn't be determined (degenerate detection)."""
+    if skipped because the ring finger is bent/curled, "fingers_together" if
+    skipped because there's no background gap to the neighboring fingers,
+    "unavailable" for any other reason the pose couldn't be determined
+    (degenerate detection)."""
     if _finger_straightness(detection["ring_finger_px"]) < min_straightness:
         return "not_straight"
+    if not _fingers_spread_enough(detection["landmarks_px"], min_neighbor_gap_frac):
+        return "fingers_together"
 
     pose = refine_ring_pose(geometry, detection, position_frac)
     if pose is None:
