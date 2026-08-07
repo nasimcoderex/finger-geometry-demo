@@ -28,15 +28,28 @@ import time
 import numpy as np
 import cv2
 
-RING_POSITION_FRAC = 0.22   # fraction along the MCP->PIP->DIP->TIP landmark path
+RING_POSITION_FRAC = 0.25   # fraction along the MCP->PIP->DIP->TIP landmark path (0.22 was too low, 0.30 too high)
 RING_GAP_MM = 0.7           # clearance between finger surface and inner band edge (in mm-equivalent px)
-RING_SIZE_SCALE = 0.8       # final polish knob on top of the measured width; 1.0 = trust the measurement
+RING_SIZE_SCALE = 0.70      # final polish knob on top of the measured width; 1.0 = trust the measurement
+                            # (was 0.8 - tightened for a snugger wrap, was reading as loose/floating)
 # Rotation around the finger's own axis (tangent3) - controls where around the
 # finger's circumference the gem/setting sits. 0 = whatever the asset's own
 # local-space "theta=90" convention lands on for a given hand pose. Positive
 # degrees rotate the same direction as standard math angle convention (using
 # normal3/binormal3 as the local x/y of that rotation plane).
 RING_ROLL_OFFSET_DEG = 0.0
+
+# Tilt of the ring's whole plane, forward/backward relative to the finger's
+# on-screen axis - different from roll above (which spins the gem around the
+# finger's circumference; this leans the entire ring plane instead). Rotates
+# tangent3 into binormal3 (depth), around the normal3 axis.
+# Reset to 0: on the procedural torus, local Z was a thin "band width" axis,
+# so tilting it was a small, safe adjustment. This real asset's local Z has
+# real volume (it's not just band width), so tilting it warps/stretches the
+# projected band into an exaggerated curve - confirmed by user report after
+# trying -5/-8 deg. Leave at 0 unless a different kind of correction (not a
+# simple axis tilt) is worth exploring.
+RING_TILT_OFFSET_DEG = 0.0
 
 # One Euro Filter (Casiez et al. 2012) parameters. A fixed-alpha EMA can't
 # win here: smooth enough to kill landmark jitter when the hand is still is
@@ -50,11 +63,13 @@ RING_ROLL_OFFSET_DEG = 0.0
 # inflating the adaptive cutoff (cutoff = min_cutoff + beta*|dx_hat|) even
 # when the hand is genuinely still. Lowering min_cutoff alone barely moved
 # the needle (1.398 -> 1.399 jitter std in a synthetic test); lowering beta
-# 0.4 -> 0.15 cut it to 1.056, at the cost of ~1.2 units of lag in a fast-
-# motion test (was 0.47) - a good trade at this scale, not the wild
-# overcorrection beta=0.05 would be (lag 3.35).
+# 0.4 -> 0.15 cut it to 1.056, but that traded in too much lag (user report:
+# noticeably slower than actual finger movement) - beta=0.15 measured at 1.22
+# units of lag in the fast-motion test vs 0.47 originally. beta=0.25 is the
+# better trade found: jitter=1.236 (still 12% better than the 0.4 baseline)
+# with lag back down to 0.75 (much closer to the original 0.47).
 ONE_EURO_MIN_CUTOFF = 0.6
-ONE_EURO_BETA = 0.15
+ONE_EURO_BETA = 0.25
 
 # geometry_engine.py's radius is a fixed taper-ratio heuristic on predicted
 # total finger length, and converting it to pixels via the MCP->TIP chord is
@@ -294,7 +309,8 @@ def _palm_facing_sign(landmarks_px, handedness):
     return 1.0 if (cross_z * hand_sign) >= 0 else -1.0
 
 
-def _camera_space_frame(tangent_px, flip=1.0, roll_deg=RING_ROLL_OFFSET_DEG):
+def _camera_space_frame(tangent_px, flip=1.0, roll_deg=RING_ROLL_OFFSET_DEG,
+                         tilt_deg=RING_TILT_OFFSET_DEG):
     """Builds an orthonormal (tangent, normal, binormal) frame where
     tangent/normal are the real on-screen finger direction and its in-plane
     perpendicular, and binormal = cross(tangent, normal) is, by
@@ -305,23 +321,32 @@ def _camera_space_frame(tangent_px, flip=1.0, roll_deg=RING_ROLL_OFFSET_DEG):
     "front" (local theta=90) tracks the hand's real rotation instead of
     always facing the camera regardless of pose. `roll_deg` is a finer
     rotation around that same tangent axis, for nudging exactly where
-    around the finger's circumference the mesh's gem/setting lands."""
+    around the finger's circumference the mesh's gem/setting lands.
+    `tilt_deg` leans the whole ring plane forward/backward (rotating
+    tangent into binormal/depth, around the normal axis) instead of
+    spinning it - a separate correction from roll."""
     u = tangent_px / max(np.linalg.norm(tangent_px), 1e-9)
-    tangent3 = np.array([u[0], u[1], 0.0])
+    base_tangent3 = np.array([u[0], u[1], 0.0])
     base_normal3 = flip * np.array([-u[1], u[0], 0.0])
-    base_binormal3 = np.cross(tangent3, base_normal3)
+    base_binormal3 = np.cross(base_tangent3, base_normal3)
 
-    rad = np.radians(roll_deg)
-    cos_r, sin_r = np.cos(rad), np.sin(rad)
+    rad_r = np.radians(roll_deg)
+    cos_r, sin_r = np.cos(rad_r), np.sin(rad_r)
     normal3 = cos_r * base_normal3 + sin_r * base_binormal3
     binormal3 = -sin_r * base_normal3 + cos_r * base_binormal3
+
+    rad_t = np.radians(tilt_deg)
+    cos_t, sin_t = np.cos(rad_t), np.sin(rad_t)
+    tangent3 = cos_t * base_tangent3 + sin_t * binormal3
+    binormal3 = -sin_t * base_tangent3 + cos_t * binormal3
     return tangent3, normal3, binormal3
 
 
 def render_ring_overlay(frame_bgr, geometry, detection, ring_mesh,
                          temporal_filter=None, position_frac=RING_POSITION_FRAC,
                          gap_mm=RING_GAP_MM, size_scale=RING_SIZE_SCALE,
-                         roll_deg=RING_ROLL_OFFSET_DEG, measurement_frame_bgr=None,
+                         roll_deg=RING_ROLL_OFFSET_DEG, tilt_deg=RING_TILT_OFFSET_DEG,
+                         measurement_frame_bgr=None,
                          min_straightness=RING_MIN_STRAIGHTNESS,
                          min_neighbor_gap_frac=RING_MIN_NEIGHBOR_GAP_FRAC):
     """Composites the loaded GLB ring mesh onto frame_bgr in-place, wrapped
@@ -370,7 +395,8 @@ def render_ring_overlay(frame_bgr, geometry, detection, ring_mesh,
         return "unavailable"
 
     palm_flip = _palm_facing_sign(detection["landmarks_px"], detection["handedness"])
-    tangent3, normal3, binormal3 = _camera_space_frame(tangent_px, flip=palm_flip, roll_deg=roll_deg)
+    tangent3, normal3, binormal3 = _camera_space_frame(tangent_px, flip=palm_flip, roll_deg=roll_deg,
+                                                        tilt_deg=tilt_deg)
     # local X -> normal3 (across finger, visible), local Y -> binormal3 (depth,
     # invisible in the 2D projection but used below for shading/occlusion),
     # local Z -> tangent3 (along finger, visible, small spread from band width)
