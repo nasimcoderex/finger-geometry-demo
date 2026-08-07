@@ -61,6 +61,16 @@ WIDTH_SEARCH_MIN_FRAC = 0.4
 WIDTH_SEARCH_MAX_FRAC = 2.2
 WIDTH_MIN_EDGE_STRENGTH = 8.0     # grayscale gradient magnitude (0-255 scale) to count as a real edge
 
+# Every fix so far (position, size, occlusion) implicitly assumed a straight,
+# extended finger - a curled/bent finger's MCP->TIP path folds back on
+# itself in ways the position/tangent estimate above was never designed for
+# (see conversation: curled poses caused visibly wrong placement even after
+# ruling out renderer bugs). Rather than trying to handle every bend, gate
+# placement on straightness directly: chord length (straight-line MCP->TIP)
+# divided by path length (sum of MCP->PIP->DIP->TIP segments) is 1.0 for a
+# perfectly straight finger and drops sharply with any real bend.
+RING_MIN_STRAIGHTNESS = 0.90
+
 
 class _OneEuroFilter:
     """One scalar channel of a One Euro Filter. See module docstring for why
@@ -132,6 +142,16 @@ class TemporalFilter:
     def reset(self):
         self._filters = None
         self._halfwidth_filter = None
+
+
+def _finger_straightness(pts_px):
+    """chord / path_length: 1.0 for a perfectly straight finger, dropping
+    sharply as it bends. Returns 0.0 for a degenerate (zero-length) path."""
+    path_len = np.linalg.norm(np.diff(pts_px, axis=0), axis=1).sum()
+    if path_len < 1e-6:
+        return 0.0
+    chord = np.linalg.norm(pts_px[-1] - pts_px[0])
+    return float(chord / path_len)
 
 
 def _point_and_tangent_along_path(pts_px, frac):
@@ -259,7 +279,8 @@ def _camera_space_frame(tangent_px, flip=1.0, roll_deg=RING_ROLL_OFFSET_DEG):
 def render_ring_overlay(frame_bgr, geometry, detection, ring_mesh,
                          temporal_filter=None, position_frac=RING_POSITION_FRAC,
                          gap_mm=RING_GAP_MM, size_scale=RING_SIZE_SCALE,
-                         roll_deg=RING_ROLL_OFFSET_DEG, measurement_frame_bgr=None):
+                         roll_deg=RING_ROLL_OFFSET_DEG, measurement_frame_bgr=None,
+                         min_straightness=RING_MIN_STRAIGHTNESS):
     """Composites the loaded GLB ring mesh onto frame_bgr in-place, wrapped
     around the finger at `position_frac`. ring_mesh: (vertices, faces,
     normals, colors) as returned by ring_model.ensure_ring_glb() - vertices
@@ -268,10 +289,17 @@ def render_ring_overlay(frame_bgr, geometry, detection, ring_mesh,
     flower center - see ring_model.py). measurement_frame_bgr: the frame to
     scan for the finger's real edge, ideally *before* any overlay drawing
     (landmark dots, boxes) has been painted onto it - those would otherwise
-    contaminate the gradient scan. Defaults to frame_bgr if not given."""
+    contaminate the gradient scan. Defaults to frame_bgr if not given.
+
+    Returns a status string: "placed" if the ring was drawn, "not_straight"
+    if skipped because the ring finger is bent/curled, "unavailable" for any
+    other reason the pose couldn't be determined (degenerate detection)."""
+    if _finger_straightness(detection["ring_finger_px"]) < min_straightness:
+        return "not_straight"
+
     pose = refine_ring_pose(geometry, detection, position_frac)
     if pose is None:
-        return
+        return "unavailable"
 
     if temporal_filter is not None:
         center_px, tangent_px, radius_mm, scale_px_per_mm = temporal_filter.update(
@@ -292,7 +320,7 @@ def render_ring_overlay(frame_bgr, geometry, detection, ring_mesh,
 
     target_inner_radius_px = measured_halfwidth_px * size_scale
     if target_inner_radius_px < 2.0:
-        return
+        return "unavailable"
 
     palm_flip = _palm_facing_sign(detection["landmarks_px"])
     tangent3, normal3, binormal3 = _camera_space_frame(tangent_px, flip=palm_flip, roll_deg=roll_deg)
@@ -328,7 +356,7 @@ def render_ring_overlay(frame_bgr, geometry, detection, ring_mesh,
     all_avg_depth = tri_depth.mean(axis=1)
     visible = all_avg_depth > 0.0
     if not visible.any():
-        return
+        return "unavailable"
 
     avg_depth = all_avg_depth[visible]
     order = np.argsort(avg_depth)  # farthest (most negative) first, painter's algorithm
@@ -348,3 +376,5 @@ def render_ring_overlay(frame_bgr, geometry, detection, ring_mesh,
     for tri, diffuse, spec, base in zip(vis_tri_px, vis_diffuse, vis_spec, vis_color):
         color = tuple(int(c) for c in np.clip(base * 255.0 * diffuse + white * spec * 0.65, 0, 255))
         cv2.fillConvexPoly(frame_bgr, tri.astype(np.int32), color, cv2.LINE_AA)
+
+    return "placed"

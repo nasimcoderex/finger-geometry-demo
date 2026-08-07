@@ -45,6 +45,16 @@ def draw_text_block(img, lines, origin=(10, 22), color=(255, 255, 255)):
         y += 22
 
 
+def draw_banner(img, text, color=(0, 200, 255)):
+    """A prominent, centered message - the small corner status text is easy
+    to miss, and this is meant to actively tell the user what to do."""
+    h, w = img.shape[:2]
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.75, 2)
+    x, y = (w - tw) // 2, h - 30
+    cv2.rectangle(img, (x - 12, y - th - 10), (x + tw + 12, y + 10), (0, 0, 0), -1)
+    cv2.putText(img, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2, cv2.LINE_AA)
+
+
 def main():
     if not ONNX_PATH.exists():
         sys.exit(f"model not found at {ONNX_PATH} - copy model.onnx here first")
@@ -79,8 +89,11 @@ def main():
                 last_geometry = geometry
 
                 clean_frame_bgr = frame_bgr.copy()  # pre-composite, for the ring's edge-measurement scan
-                render_ring_overlay(frame_bgr, geometry, detection, ring_mesh, temporal_filter=ring_filter,
-                                    measurement_frame_bgr=clean_frame_bgr)
+                ring_status = render_ring_overlay(frame_bgr, geometry, detection, ring_mesh,
+                                                  temporal_filter=ring_filter,
+                                                  measurement_frame_bgr=clean_frame_bgr)
+                if ring_status == "not_straight":
+                    draw_banner(frame_bgr, "Straighten your ring finger to place the ring")
                 status_lines += [
                     f"hand: {detection['handedness']}",
                     f"finger_length (model):  {finger_length_mm:6.1f} mm",
