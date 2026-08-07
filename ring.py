@@ -234,22 +234,29 @@ def _measure_finger_halfwidth_px(gray_frame, center_px, perp_dir, prior_halfwidt
     return float(np.mean(candidates)) if candidates else prior_halfwidth_px
 
 
-def _palm_facing_sign(landmarks_px):
+def _palm_facing_sign(landmarks_px, handedness):
     """A ring's flower is fixed to one physical side of the finger - it
     doesn't spin to face the camera as the hand turns over. This needs to
     know which way the hand is actually rotated so the flower can flip to
     the far (hidden) side when the palm turns to face the camera instead of
     the back of the hand. Uses the 2D winding of wrist->index_mcp->pinky_mcp
-    (landmarks 0, 5, 17): its sign flips when the hand flips over, and it's
-    computed purely from real 2D detections - no dependence on the ONNX
-    model's ambiguous 3D output. Sign convention is a guess (matches the
-    poses tested); flip it here if a hand-flip still doesn't move the flower
-    to the far side."""
+    (landmarks 0, 5, 17): its sign flips when the hand flips over, computed
+    purely from real 2D detections - no dependence on the ONNX model's
+    ambiguous 3D output.
+
+    That winding is also anatomically mirrored between a left and a right
+    hand (confirmed: worked correctly for one hand, came out inverted for
+    the other) - a left and right hand held in the *same* real-world
+    rotation produce opposite cross-product signs, since they're mirror
+    images of each other. `handedness` ("Left"/"Right", from MediaPipe)
+    corrects for that by flipping the sign for one hand, so both hands
+    agree on which real-world rotation maps to which output sign."""
     wrist, index_mcp, pinky_mcp = landmarks_px[0], landmarks_px[5], landmarks_px[17]
     v1 = index_mcp - wrist
     v2 = pinky_mcp - wrist
     cross_z = v1[0] * v2[1] - v1[1] * v2[0]
-    return 1.0 if cross_z >= 0 else -1.0
+    hand_sign = 1.0 if handedness == "Right" else -1.0
+    return 1.0 if (cross_z * hand_sign) >= 0 else -1.0
 
 
 def _camera_space_frame(tangent_px, flip=1.0, roll_deg=RING_ROLL_OFFSET_DEG):
@@ -322,7 +329,7 @@ def render_ring_overlay(frame_bgr, geometry, detection, ring_mesh,
     if target_inner_radius_px < 2.0:
         return "unavailable"
 
-    palm_flip = _palm_facing_sign(detection["landmarks_px"])
+    palm_flip = _palm_facing_sign(detection["landmarks_px"], detection["handedness"])
     tangent3, normal3, binormal3 = _camera_space_frame(tangent_px, flip=palm_flip, roll_deg=roll_deg)
     # local X -> normal3 (across finger, visible), local Y -> binormal3 (depth,
     # invisible in the 2D projection but used below for shading/occlusion),
