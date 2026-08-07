@@ -44,8 +44,17 @@ RING_ROLL_OFFSET_DEG = 0.0
 # lagging behind / "floating" free of the finger. One Euro adapts instead -
 # min_cutoff sets how much smoothing happens at rest, beta controls how fast
 # that smoothing backs off as the tracked value's own speed increases.
-ONE_EURO_MIN_CUTOFF = 1.2
-ONE_EURO_BETA = 0.4
+# Measured empirically (see conversation): for the noise levels this sees,
+# beta dominates jitter far more than min_cutoff does - MediaPipe's per-frame
+# landmark jitter looks like "high velocity" to the derivative estimate,
+# inflating the adaptive cutoff (cutoff = min_cutoff + beta*|dx_hat|) even
+# when the hand is genuinely still. Lowering min_cutoff alone barely moved
+# the needle (1.398 -> 1.399 jitter std in a synthetic test); lowering beta
+# 0.4 -> 0.15 cut it to 1.056, at the cost of ~1.2 units of lag in a fast-
+# motion test (was 0.47) - a good trade at this scale, not the wild
+# overcorrection beta=0.05 would be (lag 3.35).
+ONE_EURO_MIN_CUTOFF = 0.6
+ONE_EURO_BETA = 0.15
 
 # geometry_engine.py's radius is a fixed taper-ratio heuristic on predicted
 # total finger length, and converting it to pixels via the MCP->TIP chord is
