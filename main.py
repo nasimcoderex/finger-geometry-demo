@@ -1,17 +1,13 @@
 """camera -> MediaPipe hand detection -> finger-geometry ONNX model ->
-geometry engine (reconstruct full profile) -> mesh -> live visualization.
+geometry engine (reconstruct full profile) -> ring try-on overlay.
 
-This is a viewer, not a product: it exists to show what model.onnx actually
-predicts on a live hand, side by side with the reconstructed 3D geometry.
-
-Controls: q / Esc to quit, s to save the current mesh as mesh_TIMESTAMP.obj.
+Controls: q / Esc to quit, s to save the current finger mesh as mesh_TIMESTAMP.obj.
 """
 import sys
 import time
 from pathlib import Path
 
 import cv2
-import numpy as np
 from PIL import Image
 
 from geometry_engine import reconstruct_full_geometry
@@ -20,10 +16,8 @@ from mesh import build_finger_mesh, save_obj
 from predictor import GeometryPredictor
 from ring import TemporalFilter, render_ring_overlay
 from ring_model import load_real_diamondring
-from viz import render_wireframe
 
 ONNX_PATH = Path(__file__).parent / "model.onnx"
-PANEL_SIZE = 420
 
 
 def open_camera():
@@ -102,20 +96,12 @@ def main():
                     f"finger_length (curve):  {geometry['arc_length'][-1]:6.1f} mm",
                     f"radius MCP->TIP: {geometry['radius'][0]:.1f} -> {geometry['radius'][-1]:.1f} mm",
                 ]
-                panel = render_wireframe(geometry, panel_size=PANEL_SIZE)
             else:
                 ring_filter.reset()  # avoid snapping/lerping from a stale pose once a hand reappears
                 status_lines.append("no hand detected")
-                panel = np.full((PANEL_SIZE, PANEL_SIZE, 3), 24, dtype=np.uint8)
-                cv2.putText(panel, "no hand", (PANEL_SIZE // 2 - 50, PANEL_SIZE // 2),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (120, 120, 120), 1, cv2.LINE_AA)
 
             draw_text_block(frame_bgr, status_lines)
-
-            cam_h, cam_w = frame_bgr.shape[:2]
-            display_cam = cv2.resize(frame_bgr, (int(cam_w * PANEL_SIZE / cam_h), PANEL_SIZE))
-            combined = np.hstack([display_cam, panel])
-            cv2.imshow("finger-geometry-demo  (q=quit, s=save mesh)", combined)
+            cv2.imshow("finger-geometry-demo  (q=quit, s=save mesh)", frame_bgr)
 
             fps_n += 1
             if time.time() - fps_t0 >= 0.5:
