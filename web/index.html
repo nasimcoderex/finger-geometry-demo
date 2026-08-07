@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>finger-geometry-demo (web)</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; color: #eee; font-family: system-ui, sans-serif; }
+    #stage { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
+    #frameCanvas, #ringCanvas, #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+    #ringCanvas, #overlay { pointer-events: none; }
+    #status { position: absolute; top: 10px; left: 10px; font-size: 13px; line-height: 1.5; text-shadow: 0 1px 2px #000; white-space: pre; }
+    #banner {
+      position: absolute; left: 50%; bottom: 30px; transform: translateX(-50%);
+      background: #000; color: #00c8ff; padding: 8px 16px; border-radius: 4px;
+      font-size: 15px; display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <!-- raw camera feed, hidden - frameCanvas below draws it mirrored, which
+         is the single source of truth for detection/inference/rendering,
+         matching main.py's cv2.flip(frame_bgr, 1) being the FIRST step
+         before anything else touches the frame. -->
+    <video id="video" autoplay playsinline muted style="display:none"></video>
+    <canvas id="frameCanvas"></canvas>
+    <canvas id="ringCanvas"></canvas>
+    <canvas id="overlay"></canvas>
+    <div id="status"></div>
+    <div id="banner"></div>
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
