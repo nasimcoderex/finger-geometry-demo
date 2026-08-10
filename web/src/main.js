@@ -40,7 +40,15 @@ function drawMirroredFrame() {
   const w = video.videoWidth;
   const h = video.videoHeight;
   if (!w || !h) return false;
-  for (const c of [frameCanvas, ringCanvas, overlay]) {
+  // ringCanvas is NOT resized here - it's owned exclusively by
+  // ringRenderer.resize() (Three.js's renderer.setSize()), which also
+  // applies devicePixelRatio to the backing buffer. Setting canvas.width
+  // directly here as well (as this loop used to do for all three canvases)
+  // resets/clears the WebGL drawing buffer to a *different* size than what
+  // Three.js's camera/viewport state believes it is, since Three.js's size
+  // tracking doesn't know about that external write - confirmed as the
+  // cause of the ring rendering wildly offset from the tracked finger.
+  for (const c of [frameCanvas, overlay]) {
     if (c.width !== w || c.height !== h) {
       c.width = w;
       c.height = h;
@@ -68,6 +76,26 @@ function toGrayscale(imageData) {
     gray[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
   }
   return gray;
+}
+
+// Average brightness in a box around the ring's position - local lighting
+// where the ring actually sits, not a whole-frame average that could be
+// skewed by a bright window or dark background elsewhere in the shot.
+function sampleAverageLuminance(grayData, width, height, centerPx, boxRadiusPx) {
+  const x0 = Math.max(0, Math.round(centerPx[0] - boxRadiusPx));
+  const x1 = Math.min(width, Math.round(centerPx[0] + boxRadiusPx));
+  const y0 = Math.max(0, Math.round(centerPx[1] - boxRadiusPx));
+  const y1 = Math.min(height, Math.round(centerPx[1] + boxRadiusPx));
+  if (x1 <= x0 || y1 <= y0) return 128;
+  let sum = 0;
+  let count = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      sum += grayData[y * width + x];
+      count++;
+    }
+  }
+  return sum / count;
 }
 
 // TEMPORARY debug overlay (dots on all 21 landmarks, highlighted ring
@@ -140,6 +168,8 @@ async function processFrame() {
   const { tangent3, normal3, binormal3 } = cameraSpaceFrame(
     filtered.tangent, palmFlip, RING_ROLL_OFFSET_DEG, RING_TILT_OFFSET_DEG,
   );
+  const localLuminance = sampleAverageLuminance(grayData, w, h, filtered.center, targetInnerRadiusPx * 3);
+  ringRenderer.updateExposureFromLuminance(localLuminance);
   ringRenderer.renderFrame({ centerPx: filtered.center, tangent3, normal3, binormal3, scalePx: targetInnerRadiusPx });
   updateBanner(bannerEl, null);
   return {
